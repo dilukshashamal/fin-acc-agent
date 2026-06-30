@@ -1,3 +1,2 @@
--- Create SaaS and Vector databases for the microservices
-CREATE DATABASE saas_db;
-CREATE DATABASE vector_db;
+-- Database creation is already handled by the environment variables
+-- in init-multiple-databases.sh to avoid duplicate conflicts.

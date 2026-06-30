@@ -14,6 +14,32 @@ resource "azurerm_container_app_environment" "env" {
   infrastructure_subnet_id   = azurerm_subnet.aca_snet.id
 }
 
+# 0. Redis (Internal Cache/Broker via Container Apps to avoid Azure Cache retirement/cost)
+resource "azurerm_container_app" "redis" {
+  name                         = "ca-redis"
+  container_app_environment_id = azurerm_container_app_environment.env.id
+  resource_group_name          = azurerm_resource_group.rg.name
+  revision_mode                = "Single"
+
+  template {
+    container {
+      name   = "redis"
+      image  = "redis:7-alpine"
+      cpu    = 0.25
+      memory = "0.5Gi"
+    }
+  }
+
+  ingress {
+    external_enabled = false
+    target_port      = 6379
+    traffic_weight {
+      percentage      = 100
+      latest_revision = true
+    }
+  }
+}
+
 # 1. API Gateway (Public Ingress)
 resource "azurerm_container_app" "gateway" {
   name                         = "ca-gateway"
@@ -24,7 +50,8 @@ resource "azurerm_container_app" "gateway" {
   template {
     container {
       name   = "api-gateway"
-      image  = "${azurerm_container_registry.acr.login_server}/api-gateway:latest"
+      # Dummy image for initial terraform apply. CI/CD will push real image to ACR and update.
+      image  = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
       cpu    = 0.25
       memory = "0.5Gi"
     }
@@ -38,10 +65,6 @@ resource "azurerm_container_app" "gateway" {
       latest_revision = true
     }
   }
-
-  # Depends on ACR so the image can be pulled (in a real CI/CD pipeline, this would be pushed first)
-  # We will use dummy images or comment this block out if pushing via CI/CD later.
-  # For now, it assumes the image exists.
 }
 
 # 2. Frontend (React/Vite)
@@ -54,14 +77,14 @@ resource "azurerm_container_app" "frontend" {
   template {
     container {
       name   = "frontend"
-      image  = "${azurerm_container_registry.acr.login_server}/frontend:latest"
+      image  = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
       cpu    = 0.25
       memory = "0.5Gi"
     }
   }
 
   ingress {
-    external_enabled = false # Internal only, accessed via gateway
+    external_enabled = false
     target_port      = 80
     traffic_weight {
       percentage      = 100
@@ -80,7 +103,7 @@ resource "azurerm_container_app" "workspace_ops" {
   template {
     container {
       name   = "workspace-ops"
-      image  = "${azurerm_container_registry.acr.login_server}/workspace-ops:latest"
+      image  = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
       cpu    = 0.5
       memory = "1Gi"
       
@@ -90,7 +113,7 @@ resource "azurerm_container_app" "workspace_ops" {
       }
       env {
         name  = "REDIS_URL"
-        value = "redis://:${azurerm_redis_cache.redis.primary_access_key}@${azurerm_redis_cache.redis.hostname}:${azurerm_redis_cache.redis.ssl_port}/0"
+        value = "redis://${azurerm_container_app.redis.latest_revision_fqdn}:6379/0"
       }
       env {
         name  = "SECRET_KEY"
@@ -127,7 +150,7 @@ resource "azurerm_container_app" "ai_agent" {
   template {
     container {
       name   = "ai-agent"
-      image  = "${azurerm_container_registry.acr.login_server}/ai-agent:latest"
+      image  = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
       cpu    = 0.5
       memory = "1Gi"
       
@@ -137,7 +160,7 @@ resource "azurerm_container_app" "ai_agent" {
       }
       env {
         name  = "REDIS_URL"
-        value = "redis://:${azurerm_redis_cache.redis.primary_access_key}@${azurerm_redis_cache.redis.hostname}:${azurerm_redis_cache.redis.ssl_port}/0"
+        value = "redis://${azurerm_container_app.redis.latest_revision_fqdn}:6379/0"
       }
       env {
         name  = "AZURE_OPENAI_ENDPOINT"
@@ -170,7 +193,7 @@ resource "azurerm_container_app" "ai_worker" {
   template {
     container {
       name   = "ai-worker"
-      image  = "${azurerm_container_registry.acr.login_server}/ai-worker:latest"
+      image  = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
       cpu    = 0.5
       memory = "1Gi"
       
@@ -180,7 +203,7 @@ resource "azurerm_container_app" "ai_worker" {
       }
       env {
         name  = "REDIS_URL"
-        value = "redis://:${azurerm_redis_cache.redis.primary_access_key}@${azurerm_redis_cache.redis.hostname}:${azurerm_redis_cache.redis.ssl_port}/0"
+        value = "redis://${azurerm_container_app.redis.latest_revision_fqdn}:6379/0"
       }
       env {
         name  = "AZURE_OPENAI_ENDPOINT"

@@ -38,13 +38,4 @@ resource "azurerm_postgresql_flexible_server_database" "vector_db" {
   collation = "en_US.utf8"
 }
 
-# Azure Cache for Redis (Basic C0 for cost optimization)
-resource "azurerm_redis_cache" "redis" {
-  name                = "redis-${var.prefix}-${var.environment}"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  capacity            = 0
-  family              = "C"
-  sku_name            = "Basic"
-  enable_non_ssl_port = true
-}
+

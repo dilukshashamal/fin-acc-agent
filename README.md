@@ -22,6 +22,11 @@ The AI agent is capable of ingesting massive tax documents, performing multi-ste
 
 The platform is built using a **decoupled microservices architecture** orchestrated via Docker Compose. We strictly separate the transactional B2B SaaS logic from the computationally heavy AI and vector ingestion pipelines.
 
+![Infrastructure Architecture](./infra_architecture.png)
+
+### Azure Deployment Architecture
+![Azure Infrastructure Architecture](./azure_infra_architecture.png)
+
 ```mermaid
 flowchart TB
     subgraph Client["Browser"]

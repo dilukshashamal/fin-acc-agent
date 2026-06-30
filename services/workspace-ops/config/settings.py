@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     # Third-party apps
     'rest_framework',
     'corsheaders',
+    'storages',
     
     # Project apps
     'apps.core',
@@ -89,8 +90,16 @@ STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Media files (Uploaded documents)
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+if env.str('AZURE_ACCOUNT_NAME', default=''):
+    DEFAULT_FILE_STORAGE = 'storages.backends.azure_storage.AzureStorage'
+    AZURE_ACCOUNT_NAME = env.str('AZURE_ACCOUNT_NAME')
+    AZURE_ACCOUNT_KEY = env.str('AZURE_ACCOUNT_KEY', default='')
+    AZURE_CONTAINER = env.str('AZURE_CONTAINER', default='media')
+    # Use Connection String if provided
+    AZURE_CONNECTION_STRING = env.str('AZURE_CONNECTION_STRING', default='')
+else:
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

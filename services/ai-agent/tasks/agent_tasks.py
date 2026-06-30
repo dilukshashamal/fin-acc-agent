@@ -8,6 +8,8 @@ from agent.retriever import get_vector_store
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import fitz # PyMuPDF
+import tempfile
+from azure.storage.blob import BlobServiceClient
 
 # Initialize Celery app
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
@@ -128,21 +130,59 @@ def run_research_agent(tenant_id: str, conversation_id: str, message_id: str, qu
         raise e
 
 @celery_app.task(name="tasks.process_document")
-def process_document(tenant_id: str, document_id: str, file_path: str):
+def process_document(tenant_id: str, document_id: str, file_name: str):
     """Parses an uploaded document, chunks it, and saves embeddings to pgvector."""
-    print(f"Starting ingestion for document {document_id}")
+    print(f"Starting ingestion for document {document_id}, file: {file_name}")
     
-    # 1. Read PDF
+    # 1. Acquire PDF file (Download from Azure or read local)
+    azure_account = os.getenv('AZURE_ACCOUNT_NAME')
+    azure_container = os.getenv('AZURE_CONTAINER', 'media')
+    conn_string = os.getenv('AZURE_CONNECTION_STRING')
+    
+    local_pdf_path = file_name
+    temp_file_obj = None
+    
+    if azure_account:
+        try:
+            print(f"Downloading from Azure Blob Storage: {file_name}")
+            temp_file_obj = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+            local_pdf_path = temp_file_obj.name
+            
+            if conn_string:
+                blob_service_client = BlobServiceClient.from_connection_string(conn_string)
+            else:
+                account_url = f"https://{azure_account}.blob.core.windows.net"
+                blob_service_client = BlobServiceClient(account_url, credential=os.getenv('AZURE_ACCOUNT_KEY'))
+                
+            blob_client = blob_service_client.get_blob_client(container=azure_container, blob=file_name)
+            
+            with open(local_pdf_path, "wb") as download_file:
+                download_file.write(blob_client.download_blob().readall())
+        except Exception as e:
+            print(f"Failed to download from Azure: {e}")
+            if temp_file_obj:
+                os.remove(temp_file_obj.name)
+            return False
+    else:
+        # Local fallback, assume file_name is a relative path in /app/media
+        local_pdf_path = os.path.join("/app/media", file_name)
+
+    # 2. Read PDF
     text = ""
     try:
-        doc = fitz.open(file_path)
+        doc = fitz.open(local_pdf_path)
         for page in doc:
             text += page.get_text() + "\n"
     except Exception as e:
         print(f"Failed to read PDF: {e}")
+        if temp_file_obj:
+            os.remove(temp_file_obj.name)
         return False
+    finally:
+        if temp_file_obj and os.path.exists(temp_file_obj.name):
+            os.remove(temp_file_obj.name)
 
-    # 2. Chunk text
+    # 3. Chunk text
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200,

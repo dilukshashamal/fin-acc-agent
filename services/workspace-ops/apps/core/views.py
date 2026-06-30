@@ -95,7 +95,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
             kwargs={
                 'tenant_id': str(self.request.tenant.id),
                 'document_id': str(document.id),
-                'file_path': document.file.path
+                'file_name': document.file.name
             }
         )
         

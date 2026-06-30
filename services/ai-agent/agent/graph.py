@@ -1,10 +1,16 @@
 import os
-import json
 import time
+import json
+import re
 from typing import TypedDict, List, Dict, Any, Literal
 from langgraph.graph import StateGraph, END
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.documents import Document
 
-# Define the state shape for our LangGraph agent
+from agent.retriever import retrieve_chunks
+
 class AgentState(TypedDict):
     tenant_id: str
     question: str
@@ -17,7 +23,14 @@ class AgentState(TypedDict):
     citations: List[Dict[str, Any]]
     error: str
 
-# Helper to log steps
+def get_llm():
+    return ChatOpenAI(
+        base_url=os.getenv("AZURE_OPENAI_ENDPOINT", "https://mock"),
+        api_key=os.getenv("AZURE_OPENAI_API_KEY", "mock"),
+        model=os.getenv("AZURE_OPENAI_CHAT_MODEL", "gpt-4o"),
+        temperature=0.0
+    )
+
 def log_step(state: AgentState, step_name: str, message: str) -> AgentState:
     state["current_step"] = step_name
     state["steps_log"].append({
@@ -27,140 +40,133 @@ def log_step(state: AgentState, step_name: str, message: str) -> AgentState:
     })
     return state
 
-# Node 1: Router / Intent Classifier
 def route_node(state: AgentState) -> Literal["plan", "retrieve"]:
     state = log_step(state, "router", "Analyzing question intent and routing...")
     
-    # In a real system, we call a cheap model. Here we mock it.
-    question = state["question"].lower()
-    if "compare" in question or "and" in question or "how does" in question:
-        # Route to planning for complex multi-hop queries
+    # Check if API key is real, if mock, fallback to mock logic to avoid instant crash for UI testing
+    if os.getenv("AZURE_OPENAI_API_KEY", "mock") == "mock":
+        question = state["question"].lower()
+        if "compare" in question or "and" in question or "how does" in question:
+            return "plan"
+        return "retrieve"
+
+    llm = get_llm()
+    prompt = PromptTemplate.from_template(
+        "You are an intelligent router for an accounting AI agent. "
+        "Analyze the following query. If it requires multiple steps of reasoning or comparing multiple distinct concepts, output exactly 'plan'. "
+        "If it is a direct lookup or single concept question, output exactly 'retrieve'.\n\nQuery: {query}\n\nDecision:"
+    )
+    chain = prompt | llm | StrOutputParser()
+    decision = chain.invoke({"query": state["question"]}).strip().lower()
+    
+    if "plan" in decision:
         return "plan"
     return "retrieve"
 
-# Node 2: Planner (for complex queries)
 def plan_node(state: AgentState) -> AgentState:
     state = log_step(state, "planner", "Decomposing query into sub-questions...")
-    time.sleep(1.0) # Simulate thinking
     
-    question = state["question"]
-    # Decompose into sub-questions
-    state["sub_questions"] = [
-        f"Search regulation and standards matching: {question}",
-        f"Search client files matching: {question}"
-    ]
-    state = log_step(state, "planner", f"Planned sub-questions: {state['sub_questions']}")
+    if os.getenv("AZURE_OPENAI_API_KEY", "mock") == "mock":
+        state["sub_questions"] = [f"Search matching: {state['question']}"]
+        return state
+
+    llm = get_llm()
+    prompt = PromptTemplate.from_template(
+        "Break down the following complex accounting/tax query into 2 or 3 distinct sub-questions for vector search. "
+        "Return ONLY a JSON array of strings, no markdown formatting.\n\nQuery: {query}"
+    )
+    chain = prompt | llm | StrOutputParser()
+    try:
+        response = chain.invoke({"query": state["question"]})
+        # Clean potential markdown
+        response = response.replace("```json", "").replace("```", "").strip()
+        sub_qs = json.loads(response)
+        if isinstance(sub_qs, list):
+            state["sub_questions"] = sub_qs
+            state = log_step(state, "planner", f"Planned sub-questions: {len(sub_qs)} searches")
+    except Exception as e:
+        state["sub_questions"] = [state["question"]]
+        state = log_step(state, "planner", f"Planning failed, falling back to direct search.")
+    
     return state
 
-# Node 3: Hybrid Retriever
 def retrieve_node(state: AgentState) -> AgentState:
     state = log_step(state, "retriever", "Searching regulatory index & tenant private documents...")
-    time.sleep(1.5) # Simulate search latency
     
-    tenant_id = state["tenant_id"]
-    question = state["question"].lower()
+    queries = state.get("sub_questions", [])
+    if not queries:
+        queries = [state["question"]]
+        
+    all_chunks = []
+    seen_ids = set()
     
-    # Seed mock document chunks that simulate public & private records
-    mock_db = [
-        {
-            "id": "chunk_ifrs16_1",
-            "source": "IFRS 16 - Leases (Paragraph 31)",
+    if os.getenv("AZURE_OPENAI_API_KEY", "mock") == "mock":
+        # MOCK FALLBACK for UI testing
+        state["retrieved_chunks"] = [{
+            "id": "mock_chunk_1",
+            "source": "Mock Standard",
             "type": "regulatory",
-            "text": "At the commencement date, a lessee shall measure the right-of-use asset at cost. The cost of the right-of-use asset shall comprise the amount of the initial measurement of the lease liability, any lease payments made at or before the commencement date, and any initial direct costs incurred.",
-            "relevance_score": 0.95
-        },
-        {
-            "id": "chunk_ifrs16_2",
-            "source": "IFRS 16 - Leases (Paragraph 35)",
-            "type": "regulatory",
-            "text": "If the lease transfers ownership of the underlying asset to the lessee by the end of the lease term, or if the cost of the right-of-use asset reflects that the lessee will exercise a purchase option, the lessee shall depreciate the right-of-use asset from the commencement date to the end of the useful life.",
-            "relevance_score": 0.88
-        },
-        {
-            "id": "chunk_vat_eu",
-            "source": "EU VAT Directive (Article 58)",
-            "type": "regulatory",
-            "text": "The place of supply of telecommunications, broadcasting and electronically supplied services to a non-taxable person shall be the place where that person is established, has his permanent address or usually resides.",
-            "relevance_score": 0.92
-        },
-        {
-            "id": "chunk_client_audit",
-            "source": "Client Audit File - Alpha Manufacturing Corp",
-            "type": "tenant_private",
-            "text": "Alpha Corp entered into a 5-year lease of factory equipment starting January 1, 2025. Annual lease payments are $100,000. Initial direct transaction costs incurred were $5,000, capitalized under right-of-use asset.",
-            "relevance_score": 0.90
-        }
-    ]
+            "text": "This is a mock retrieved chunk because Azure credentials are not provided.",
+            "relevance_score": 0.99
+        }]
+        return state
     
-    # Filter based on question keywords
-    found_chunks = []
-    if "lease" in question or "ifrs 16" in question or "ifrs16" in question:
-        found_chunks.append(mock_db[0])
-        found_chunks.append(mock_db[1])
-        if "alpha" in question or "client" in question:
-            found_chunks.append(mock_db[3])
-    elif "vat" in question or "supply" in question or "eu" in question:
-        found_chunks.append(mock_db[2])
-    else:
-        # Generic fallback
-        found_chunks.append(mock_db[0])
-        found_chunks.append(mock_db[3])
-
-    state["retrieved_chunks"] = found_chunks
-    state = log_step(state, "retriever", f"Retrieved {len(found_chunks)} relevant source document chunks.")
+    for q in queries:
+        docs = retrieve_chunks(query=q, tenant_id=state["tenant_id"], k=4)
+        for d in docs:
+            chunk_id = d.metadata.get("chunk_id", f"chunk_{hash(d.page_content)}")
+            if chunk_id not in seen_ids:
+                seen_ids.add(chunk_id)
+                all_chunks.append({
+                    "id": chunk_id,
+                    "source": d.metadata.get("source_name", "Unknown Document"),
+                    "type": "tenant_private",
+                    "text": d.page_content,
+                    "relevance_score": 0.90 # Mock score as pgvector similarity score is separate
+                })
+                
+    state["retrieved_chunks"] = all_chunks
+    state = log_step(state, "retriever", f"Retrieved {len(all_chunks)} relevant source document chunks.")
     return state
 
-# Node 4: Synthesizer
 def synthesize_node(state: AgentState) -> AgentState:
     state = log_step(state, "synthesizer", "Synthesizing answer grounded in source documents...")
-    time.sleep(1.5) # Simulate generation
     
-    question = state["question"].lower()
-    chunks = state["retrieved_chunks"]
-    
-    # Formulate answer text referencing chunk IDs
-    if "lease" in question or "ifrs 16" in question or "ifrs16" in question:
-        answer = (
-            "Under **IFRS 16 (Leases)**, a lessee is required to recognize a right-of-use (ROU) asset at cost "
-            "at the commencement date [citation:chunk_ifrs16_1]. This cost includes the initial measurement of the lease "
-            "liability plus initial direct costs [citation:chunk_ifrs16_1].\n\n"
-            "If the lease transfers ownership of the asset by the end of the term, or a purchase option is likely, "
-            "the asset is depreciated over its useful life [citation:chunk_ifrs16_2].\n\n"
-        )
-        if "alpha" in question:
-            answer += (
-                "Based on the **Alpha Manufacturing Corp** file, their equipment lease starting Jan 1, 2025, capitalizes "
-                "the $5,000 transaction costs into the right-of-use asset, which complies with Paragraph 31 requirements [citation:chunk_client_audit]."
-            )
-    elif "vat" in question or "supply" in question or "eu" in question:
-        answer = (
-            "According to **Article 58 of the EU VAT Directive**, the place of supply for electronic, telecommunications, "
-            "and broadcasting services to non-taxable consumers is the country where the consumer is established or resides [citation:chunk_vat_eu]. "
-            "Therefore, VAT must be charged at the rate applicable in the consumer's member state rather than the supplier's state."
-        )
-    else:
-        answer = (
-            "Based on the retrieved standards [citation:chunk_ifrs16_1] and client documentation [citation:chunk_client_audit], "
-            f"we have analyzed the query: '{state['question']}'. The transactions must be measured at initial cost "
-            "comprising lease liability measurements and transaction costs."
-        )
+    if os.getenv("AZURE_OPENAI_API_KEY", "mock") == "mock":
+        state["draft_answer"] = "This is a mock answer based on [citation:mock_chunk_1]. Please configure your `.env` file with Azure OpenAI credentials to see real reasoning."
+        return state
 
+    chunks = state["retrieved_chunks"]
+    context_str = "\n\n".join([f"--- Chunk ID: {c['id']} | Source: {c['source']} ---\n{c['text']}" for c in chunks])
+    
+    llm = get_llm()
+    prompt = PromptTemplate.from_template(
+        "You are an expert AI Accounting Assistant. Answer the user's query using ONLY the provided context.\n"
+        "You MUST cite your sources strictly using this format: [citation:CHUNK_ID]. Do not use standard markdown links for citations.\n"
+        "If the context does not contain the answer, say so clearly.\n\n"
+        "### Context Documents:\n{context}\n\n"
+        "### User Query: {query}\n\n"
+        "### Answer:"
+    )
+    
+    chain = prompt | llm | StrOutputParser()
+    answer = chain.invoke({
+        "context": context_str if chunks else "No relevant documents found.",
+        "query": state["question"]
+    })
+    
     state["draft_answer"] = answer
     state = log_step(state, "synthesizer", "Draft answer formulated with source citations.")
     return state
 
-# Node 5: Citation Validator
 def verify_citations_node(state: AgentState) -> AgentState:
     state = log_step(state, "validator", "Auditing citations and validating claims against source text...")
-    time.sleep(1.0) # Simulate checking
     
     draft = state["draft_answer"]
     chunks = state["retrieved_chunks"]
     valid_ids = {c["id"] for c in chunks}
     
-    # Parse citations like [citation:chunk_id]
     citations = []
-    import re
     matches = re.findall(r'\[citation:([a-zA-Z0-9_-]+)\]', draft)
     
     for idx, match_id in enumerate(matches):
@@ -174,7 +180,6 @@ def verify_citations_node(state: AgentState) -> AgentState:
                 "confidence": 0.98
             })
         else:
-            # Drop citation or flag error if it references a non-existent/hallucinated chunk
             state["error"] = f"Citation validator caught a hallucinated reference: {match_id}"
             state = log_step(state, "validator", f"Warning: Dropped hallucinated citation {match_id}")
 
@@ -186,17 +191,14 @@ def verify_citations_node(state: AgentState) -> AgentState:
 # Compile the Graph
 workflow = StateGraph(AgentState)
 
-# Add Nodes
-workflow.add_node("route_node", lambda s: s) # Dummy entry router node
+workflow.add_node("route_node", lambda s: s)
 workflow.add_node("plan", plan_node)
 workflow.add_node("retrieve", retrieve_node)
 workflow.add_node("synthesize", synthesize_node)
 workflow.add_node("verify", verify_citations_node)
 
-# Add Edges
 workflow.set_entry_point("route_node")
 
-# Conditional Router
 workflow.add_conditional_edges(
     "route_node",
     route_node,

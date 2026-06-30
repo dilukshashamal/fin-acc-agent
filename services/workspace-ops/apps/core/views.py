@@ -3,8 +3,16 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.contrib.auth.models import User
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import Organization, Membership, Client, Engagement, Task, AuditLog
-from .serializers import ClientSerializer, EngagementSerializer, TaskSerializer, OrganizationSerializer, UserSerializer
+from .models import Organization, Membership, Client, Engagement, Task, AuditLog, Document
+from .serializers import ClientSerializer, EngagementSerializer, TaskSerializer, OrganizationSerializer, UserSerializer, DocumentSerializer
+import redis
+import json
+import os
+from celery import Celery
+
+redis_client = redis.from_url(os.getenv('REDIS_URL', 'redis://redis:6379/0'))
+celery_app = Celery('ai_agent', broker=os.getenv('REDIS_URL', 'redis://redis:6379/0'))
+
 
 class ClientViewSet(viewsets.ModelViewSet):
     serializer_class = ClientSerializer
@@ -66,6 +74,39 @@ class TaskViewSet(viewsets.ModelViewSet):
             action='TASK_CREATED',
             details={'task_id': str(task.id), 'task_title': task.title}
         )
+
+
+class DocumentViewSet(viewsets.ModelViewSet):
+    serializer_class = DocumentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        if hasattr(self.request, 'tenant') and self.request.tenant:
+            return Document.objects.filter(client__organization=self.request.tenant)
+        return Document.objects.none()
+
+    def perform_create(self, serializer):
+        file_obj = self.request.FILES.get('file')
+        filename = file_obj.name if file_obj else "unknown"
+        document = serializer.save(filename=filename, status='processing')
+        
+        celery_app.send_task(
+            'tasks.process_document',
+            kwargs={
+                'tenant_id': str(self.request.tenant.id),
+                'document_id': str(document.id),
+                'file_path': document.file.path
+            }
+        )
+        
+        AuditLog.objects.create(
+            organization=self.request.tenant,
+            user=self.request.user,
+            actor_type='human',
+            action='DOCUMENT_UPLOADED',
+            details={'document_id': str(document.id), 'filename': filename}
+        )
+
 
 
 class DeveloperSetupView(views.APIView):

@@ -4,6 +4,10 @@ import time
 import redis
 from celery import Celery
 from agent.graph import research_agent
+from agent.retriever import get_vector_store
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+import fitz # PyMuPDF
 
 # Initialize Celery app
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
@@ -122,3 +126,53 @@ def run_research_agent(tenant_id: str, conversation_id: str, message_id: str, qu
     except Exception as e:
         publish_event("error", {"error": str(e)})
         raise e
+
+@celery_app.task(name="tasks.process_document")
+def process_document(tenant_id: str, document_id: str, file_path: str):
+    """Parses an uploaded document, chunks it, and saves embeddings to pgvector."""
+    print(f"Starting ingestion for document {document_id}")
+    
+    # 1. Read PDF
+    text = ""
+    try:
+        doc = fitz.open(file_path)
+        for page in doc:
+            text += page.get_text() + "\n"
+    except Exception as e:
+        print(f"Failed to read PDF: {e}")
+        return False
+
+    # 2. Chunk text
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+        length_function=len,
+    )
+    chunks = text_splitter.split_text(text)
+    
+    # 3. Create LangChain Documents with metadata
+    docs = [
+        Document(
+            page_content=chunk,
+            metadata={
+                "tenant_id": tenant_id,
+                "document_id": document_id,
+                "chunk_index": i,
+                "source_name": os.path.basename(file_path),
+                "chunk_id": f"{document_id}_{i}"
+            }
+        )
+        for i, chunk in enumerate(chunks)
+    ]
+    
+    # 4. Insert into pgvector
+    try:
+        store = get_vector_store()
+        store.add_documents(docs)
+        print(f"Successfully ingested {len(docs)} chunks for document {document_id}")
+    except Exception as e:
+        print(f"Failed to ingest to pgvector: {e}")
+        return False
+        
+    return True
+

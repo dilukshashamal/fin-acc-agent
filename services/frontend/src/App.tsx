@@ -12,6 +12,7 @@ import {
   FolderOpen
 } from 'lucide-react';
 import ChatWindow from './components/chat-window';
+import DocumentUploader from './components/document-uploader';
 
 interface Client {
   id: string;
@@ -138,13 +139,15 @@ export default function App() {
             <Sparkles className="h-5 w-5 text-white" />
           </div>
           <div>
-            <h1 className="font-semibold text-lg bg-gradient-to-r from-indigo-200 to-fuchsia-200 bg-clip-text text-transparent">Antigravity</h1>
+            <h1 className="font-semibold text-lg bg-gradient-to-r from-indigo-200 to-fuchsia-200 bg-clip-text text-transparent">Fin Agent</h1>
             <p className="text-xs text-slate-400">AI Finance Orchestrator</p>
           </div>
         </div>
 
         {/* Sidebar Navigation & SaaS Data */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+
+          <DocumentUploader token={token} onUploadSuccess={handleRefresh} />
           
           {/* Active Client list */}
           <div>

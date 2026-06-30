@@ -43,6 +43,7 @@ services:
     command: sh -c "python manage.py makemigrations core && python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
     volumes:
       - ./services/workspace-ops:/app
+      - shared_media:/app/media
     environment:
       - DATABASE_URL=postgres://postgres:password@db:5432/saas_db
       - REDIS_URL=redis://redis:6379/0
@@ -66,7 +67,8 @@ services:
       - DATABASE_URL=postgres://postgres:password@db:5432/vector_db
       - REDIS_URL=redis://redis:6379/0
       - WORKSPACE_URL=http://workspace-ops:8000
-      - OPENAI_API_KEY=mock-key
+    env_file:
+      - .env
     ports:
       - "8080:8080"
     depends_on:
@@ -81,11 +83,13 @@ services:
     command: celery -A tasks.celery_app worker --loglevel=info
     volumes:
       - ./services/ai-agent:/app
+      - shared_media:/app/media
     environment:
       - DATABASE_URL=postgres://postgres:password@db:5432/vector_db
       - REDIS_URL=redis://redis:6379/0
       - WORKSPACE_URL=http://workspace-ops:8000
-      - OPENAI_API_KEY=mock-key
+    env_file:
+      - .env
     depends_on:
       - db
       - redis
@@ -110,3 +114,4 @@ networks:
 volumes:
   pgdata:
   redisdata:
+  shared_media:

@@ -1,6 +1,15 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Organization, Membership, Client, Engagement, Task, AuditLog
+from .models import Organization, Membership, Client, Engagement, Task, AuditLog, Document
+
+class DocumentSerializer(serializers.ModelSerializer):
+    client_name = serializers.ReadOnlyField(source='client.name')
+
+    class Meta:
+        model = Document
+        fields = ['id', 'client', 'client_name', 'filename', 'status', 'file', 'uploaded_at']
+        read_only_fields = ['status', 'filename']
+
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:

@@ -98,3 +98,21 @@ class AuditLog(models.Model):
     def __str__(self):
         actor = self.user.username if self.user else "Agent"
         return f"{self.created_at} - {actor} - {self.action}"
+
+
+class Document(models.Model):
+    STATUS_CHOICES = (
+        ('uploaded', 'Uploaded'),
+        ('processing', 'Processing'),
+        ('indexed', 'Indexed'),
+        ('error', 'Error'),
+    )
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='documents')
+    file = models.FileField(upload_to='client_documents/')
+    filename = models.CharField(max_length=255)
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='uploaded')
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    
+    def __str__(self):
+        return self.filename

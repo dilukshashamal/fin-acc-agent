@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: fin-acc-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_MULTIPLE_DATABASES: saas_db,vector_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./services/db-init:/docker-entrypoint-initdb.d
+    networks:
+      - fin-acc-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: fin-acc-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    networks:
+      - fin-acc-network
+
+  api-gateway:
+    build: ./services/api-gateway
+    container_name: fin-acc-api-gateway
+    ports:
+      - "80:80"
+    depends_on:
+      - workspace-ops
+      - ai-agent
+    networks:
+      - fin-acc-network
+
+  workspace-ops:
+    build: ./services/workspace-ops
+    container_name: fin-acc-workspace-ops
+    command: sh -c "python manage.py makemigrations core && python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - ./services/workspace-ops:/app
+    environment:
+      - DATABASE_URL=postgres://postgres:password@db:5432/saas_db
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=django-insecure-development-key-fin-acc
+      - DEBUG=True
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+    networks:
+      - fin-acc-network
+
+  ai-agent:
+    build: ./services/ai-agent
+    container_name: fin-acc-ai-agent
+    command: uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+    volumes:
+      - ./services/ai-agent:/app
+    environment:
+      - DATABASE_URL=postgres://postgres:password@db:5432/vector_db
+      - REDIS_URL=redis://redis:6379/0
+      - WORKSPACE_URL=http://workspace-ops:8000
+      - OPENAI_API_KEY=mock-key
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+      - redis
+    networks:
+      - fin-acc-network
+
+  ai-worker:
+    build: ./services/ai-agent
+    container_name: fin-acc-ai-worker
+    command: celery -A tasks.celery_app worker --loglevel=info
+    volumes:
+      - ./services/ai-agent:/app
+    environment:
+      - DATABASE_URL=postgres://postgres:password@db:5432/vector_db
+      - REDIS_URL=redis://redis:6379/0
+      - WORKSPACE_URL=http://workspace-ops:8000
+      - OPENAI_API_KEY=mock-key
+    depends_on:
+      - db
+      - redis
+    networks:
+      - fin-acc-network
+
+  frontend:
+    build: ./services/frontend
+    container_name: fin-acc-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./services/frontend:/app
+      - /app/node_modules
+    networks:
+      - fin-acc-network
+
+networks:
+  fin-acc-network:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
